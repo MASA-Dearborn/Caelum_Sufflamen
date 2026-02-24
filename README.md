@@ -23,16 +23,56 @@ numbersections: true
 
 # Preface
 
-## Document Purpose
+## Document purpose
 
-This manuscript is a unified explanation of `RocketAirbrakeModule` and the engineering constraints that shaped its structure. The emphasis is placed on:
+This manuscript is a unified explanation of `RocketAirbrakeModule` and the engineering constraints that shaped its structure. Emphasis is placed on:
 
-- **Determinism:** bounded work per loop iteration and per epoch.
-- **Traceability:** validity flags and timestamps for data ages.
+- **Determinism:** bounded work per `loop()` iteration and per epoch.
+- **Traceability:** validity flags and timestamps for data age.
 - **Safety by construction:** compile-time and runtime actuation gates.
 - **Review readiness:** policy logic intentionally inert until formally reviewed.
 
-# Background and System Context
+## Table of contents
+
+- [Background and system context](#background-and-system-context)
+  - [Motivation](#motivation)
+  - [Core design principles](#core-design-principles)
+  - [Module scope](#module-scope)
+- [Hardware architecture](#hardware-architecture)
+  - [Processing platform](#processing-platform)
+  - [I²C bus strategy](#i²c-bus-strategy)
+  - [Sensors](#sensors)
+  - [Actuator and safety wiring](#actuator-and-safety-wiring)
+- [Software architecture and determinism contract](#software-architecture-and-determinism-contract)
+  - [Top-level structure](#top-level-structure)
+  - [Cooperative scheduler](#cooperative-scheduler)
+  - [Nominal epoch rates](#nominal-epoch-rates)
+  - [Formal determinism invariants](#formal-determinism-invariants)
+- [State model and data contracts](#state-model-and-data-contracts)
+  - [Single-writer published state structs](#single-writer-published-state-structs)
+  - [Validity and timestamp semantics](#validity-and-timestamp-semantics)
+  - [Formal dataflow and contracts diagram](#formal-dataflow-and-contracts-diagram)
+- [EEPROM persistence and CRC integrity](#eeprom-persistence-and-crc-integrity)
+- [Sensor epochs](#sensor-epochs)
+  - [IMU epoch (`imu_update`)](#imu-epoch-imu_update)
+  - [Barometer epoch (`baro_update`)](#barometer-epoch-baro_update)
+  - [Magnetometer epoch (`mag_update`)](#magnetometer-epoch-mag_update)
+- [Derived state estimation](#derived-state-estimation)
+- [Heading pipeline and calibration](#heading-pipeline-and-calibration)
+- [Actuation and arming](#actuation-and-arming)
+- [Telemetry and command interface](#telemetry-and-command-interface)
+- [System requirements and traceability](#system-requirements-and-traceability)
+- [Timing budget and worst-case execution time](#timing-budget-and-worst-case-execution-time)
+- [Kalman-based altitude and vertical velocity estimation](#kalman-based-altitude-and-vertical-velocity-estimation)
+- [Deterministic execution and safety guarantees](#deterministic-execution-and-safety-guarantees)
+- [Operational procedures and test plan](#operational-procedures-and-test-plan)
+- [Extension roadmap](#extension-roadmap)
+- [Conclusion](#conclusion)
+- [Appendix A: Telemetry field reference](#appendix-a-telemetry-field-reference)
+- [Appendix B: Warning mask bit assignments](#appendix-b-warning-mask-bit-assignments)
+- [Appendix C: Engineering invariants](#appendix-c-engineering-invariants)
+
+# Background and system context
 
 ## Motivation
 
@@ -45,9 +85,9 @@ Small-scale flight systems occupy a challenging regime:
 
 A common failure mode in prototype flight code is architectural drift: ad-hoc control logic becomes entangled with sensor reads, printing, and timing delays. This increases the probability of timing jitter, hidden blocking calls, and unsafe actuator states.
 
-## Core Design Principles
+## Core design principles
 
-### Determinism as an Explicit Contract
+### Determinism as an explicit contract
 
 Determinism is treated as a contract enforced by structure:
 
@@ -56,7 +96,7 @@ Determinism is treated as a contract enforced by structure:
 3. No internal retry loops occur inside epoch functions.
 4. No dynamic allocation occurs in telemetry and command paths.
 
-### Traceability via Validity and Age
+### Traceability via validity and age
 
 Each state struct carries:
 
@@ -68,7 +108,7 @@ This yields:
 1. telemetry ages remain meaningful through intermittent sensor faults,
 2. downstream logic can detect staleness without ambiguous interpretation.
 
-### Safety by Construction
+### Safety by construction
 
 Actuation is prohibited unless two independent gates pass:
 
@@ -77,12 +117,12 @@ Actuation is prohibited unless two independent gates pass:
 
 Additionally, policy output must be explicitly marked valid before actuator application.
 
-## Module Scope
+## Module scope
 
 ### Provided by the module
 
 - deterministic sensor acquisition epochs
-- derived state estimation and plausibility gating
+- derived-state estimation and plausibility gating
 - tilt-compensated heading pipeline with calibration support
 - CRC-protected EEPROM configuration container
 - telemetry schema and command interface
@@ -94,9 +134,9 @@ Additionally, policy output must be explicitly marked valid before actuator appl
 - pyro control and ignition sequencing
 - full navigation and higher-order state estimation beyond basic derived state
 
-# Hardware Architecture
+# Hardware architecture
 
-## Processing Platform
+## Processing platform
 
 The intended target is a Teensy 4.1 class microcontroller running an Arduino-compatible environment. The architecture assumes:
 
@@ -105,7 +145,7 @@ The intended target is a Teensy 4.1 class microcontroller running an Arduino-com
 - serial port availability for telemetry and commands
 - a PWM-capable pin for servo output
 
-## I²C Bus Strategy
+## I²C bus strategy
 
 All sensors attach to a single selected bus:
 
@@ -121,25 +161,25 @@ All sensors attach to a single selected bus:
 - Roll and pitch are derived from a gravity-vector approximation when dynamics are low.
 - A plausibility gate (`motion_bad`) is computed from acceleration norm.
 
-### BMP58x Barometer (e.g., BMP585)
+### BMP58x barometer (e.g., BMP585)
 
 - Provides pressure and temperature.
 - Pressure is used to derive altitude relative to a configurable reference.
 - A captured baseline pressure supports pad-relative altitude.
 
-### LIS2MDL Magnetometer
+### LIS2MDL magnetometer
 
 - Provides magnetic field vector in microtesla.
 - Heading computation is tilt-compensated using IMU roll/pitch.
 - Calibration supports hard-iron offsets and diagonal scaling.
 - Field magnitude plausibility gating suppresses heading under interference.
 
-### LIS3DH Auxiliary Accelerometer
+### LIS3DH auxiliary accelerometer
 
 - Initialized to reserve presence and compatibility.
 - Optional epoch for redundancy and vibration monitoring; may be disabled to preserve timing margin.
 
-## Actuator and Safety Wiring
+## Actuator and safety wiring
 
 The actuator is a servo controlling an airbrake mechanism.
 
@@ -148,9 +188,9 @@ The actuator is a servo controlling an airbrake mechanism.
 
 The safety posture is strict: the physical switch alone is insufficient; the software token and compile-time gate must also pass.
 
-# Software Architecture and Determinism Contract
+# Software architecture and determinism contract
 
-## Top-Level Structure
+## Top-level structure
 
 The codebase is organized by engineering concerns:
 
@@ -163,7 +203,7 @@ The codebase is organized by engineering concerns:
 7. actuation abstraction and arming FSM
 8. telemetry schema, warning mask, and command parser
 
-## Cooperative Scheduler
+## Cooperative scheduler
 
 A cooperative scheduler is implemented inside `loop()`:
 
@@ -171,7 +211,7 @@ A cooperative scheduler is implemented inside `loop()`:
 - Each scheduled epoch performs bounded work and returns.
 - No `delay()` calls appear in the scheduler loop.
 
-## Nominal Epoch Rates
+## Nominal epoch rates
 
 - IMU: 100 Hz
 - Barometer: 50 Hz
@@ -179,16 +219,16 @@ A cooperative scheduler is implemented inside `loop()`:
 - Estimator: 50 Hz
 - Telemetry: 20 Hz
 
-## Formal Determinism Invariants
+## Formal determinism invariants
 
 1. No blocking in `loop()`.
 2. Bounded epochs: each epoch performs at most one sensor transaction per scheduled invocation.
 3. Epoch idempotence: epochs may be called every loop iteration.
 4. No dynamic allocation on hot paths.
 
-# State Model and Data Contracts
+# State model and data contracts
 
-## Single-Writer Published State Structs
+## Single-writer published state structs
 
 Each subsystem publishes into a single-writer state struct:
 
@@ -197,7 +237,7 @@ Each subsystem publishes into a single-writer state struct:
 - `MagSample mag_s`
 - `FlightState fs_s`
 
-## Validity and Timestamp Semantics
+## Validity and timestamp semantics
 
 Each state struct carries:
 
@@ -214,21 +254,21 @@ t - S.t\_ms, & S.valid = \text{true} \\
 \end{cases}
 $$ {#eq:age-operator}
 
-## Formal Dataflow and Contracts Diagram
+## Formal dataflow and contracts diagram
 
-![System dataflow with single-writer publication, validity/age propagation, and actuation gating.](figs/system-dataflow.png){#fig:system-dataflow width=90%}
+![Figure: System dataflow with single-writer publication, validity/age propagation, and actuation gating.](figs/system-dataflow.png){#fig:system-dataflow width=90%}
 
 **Contract C-1 (single-writer):** Each state struct has exactly one writer.  
 **Contract C-2 (validity semantics):** `t_ms` updates on every attempt. `valid` reflects semantic correctness.  
 **Contract C-3 (safety gating):** Actuator forced idle unless `ACTUATION_ENABLED ∧ ARMED ∧ pol.valid`.
 
-# EEPROM Persistence and CRC Integrity
+# EEPROM persistence and CRC integrity
 
 ## Motivation
 
 Configuration storage is safety-relevant: corrupted parameters can compromise derived state and actuation behavior. The design stores a structured blob with explicit integrity checks.
 
-## Blob Structure and CRC32 Method
+## Blob structure and CRC32 method
 
 A typical EEPROM blob includes:
 
@@ -240,16 +280,16 @@ A typical EEPROM blob includes:
 
 During CRC computation, the stored CRC field is treated as zero to avoid self-inclusion.
 
-## Operational Behavior
+## Operational behavior
 
 - `eeprom_load_cfg()` rejects blobs with wrong magic, wrong version, or CRC mismatch.
 - `eeprom_save_cfg()` writes a newly computed CRC.
 
-# Sensor Epochs
+# Sensor epochs
 
-## IMU Epoch (`imu_update`)
+## IMU epoch (`imu_update`)
 
-### Functional Role
+### Functional role
 
 `imu_update()` performs bounded acquisition and publishes:
 
@@ -258,7 +298,7 @@ During CRC computation, the stored CRC field is treated as zero to avoid self-in
 - roll/pitch derived from the gravity-vector approximation
 - acceleration norm $\|a\|$ and a plausibility flag
 
-### Roll and Pitch from Gravity Vector
+### Roll and pitch from gravity vector
 
 Under low translational acceleration, the accelerometer measures gravity in sensor coordinates. Let $(a_x,a_y,a_z)$ be the measured acceleration. Then:
 
@@ -269,7 +309,7 @@ $$ {#eq:imu-roll-pitch}
 
 where $\phi$ is roll and $\theta$ is pitch.
 
-### Motion Plausibility Gate
+### Motion plausibility gate
 
 Compute:
 
@@ -279,11 +319,11 @@ $$ {#eq:accel-norm}
 
 A conservative range check is used to detect regimes where the gravity-vector approximation is unreliable (free-fall, severe vibration, or large accelerations). When out-of-range, `motion_bad` is asserted and tilt compensation is suppressed.
 
-## Barometer Epoch (`baro_update`)
+## Barometer epoch (`baro_update`)
 
 `baro_update()` publishes pressure (hPa) and temperature (°C) with validity and timestamps.
 
-## Magnetometer Epoch (`mag_update`)
+## Magnetometer epoch (`mag_update`)
 
 `mag_update()` publishes:
 
@@ -293,9 +333,9 @@ A conservative range check is used to detect regimes where the gravity-vector ap
 - heading when gated valid
 - calibration-valid flag
 
-# Derived State Estimation
+# Derived state estimation
 
-## Pressure-to-Altitude Approximation
+## Pressure-to-altitude approximation
 
 Altitude is approximated from pressure as:
 
@@ -305,7 +345,7 @@ $$ {#eq:pressure-altitude}
 
 where $P$ is measured pressure and $P_0$ is a reference pressure (baseline if captured, else sea-level reference).
 
-## EMA Filtering (Optional Baseline)
+## EMA filtering (optional baseline)
 
 Altitude EMA update:
 
@@ -321,18 +361,18 @@ $$ {#eq:ema-vz}
 
 A similar EMA may be applied to velocity. In practice, the EMA and Kalman paths can coexist, with selection via a configuration switch.
 
-## Baseline vs Sea-Level Reference
+## Baseline vs. sea-level reference
 
 - If a baseline is captured (`baro_baseline_hpa` finite), altitude becomes pad-relative.
 - Otherwise, `sea_level_hpa` is used for approximate MSL altitude.
 
-# Heading Pipeline and Calibration
+# Heading pipeline and calibration
 
-## Tilt Compensation Motivation
+## Tilt compensation motivation
 
 A magnetometer measures the 3D field vector. Without tilt compensation, computed yaw/heading is corrupted by vertical components when the sensor frame is rolled/pitched. Tilt compensation rotates the measured field into an estimated horizontal plane using roll/pitch.
 
-## Tilt-Compensated Heading
+## Tilt-compensated heading
 
 Let $(m_x,m_y,m_z)$ be the calibrated magnetic field, roll $\phi$, pitch $\theta$. A standard tilt compensation approximation is:
 
@@ -352,7 +392,7 @@ $$ {#eq:heading-psi}
 
 Then apply declination correction and wrap to $[0,360)$.
 
-## Calibration Model
+## Calibration model
 
 Hard-iron offsets $(o_x,o_y,o_z)$ and diagonal scales $(s_x,s_y,s_z)$:
 
@@ -362,7 +402,7 @@ m'_y = (m_y - o_y)s_y,\quad
 m'_z = (m_z - o_z)s_z
 $$ {#eq:mag-calibration}
 
-## Interference Gate
+## Interference gate
 
 Earth-field magnitude is typically tens of microtesla. A conservative range gate (example):
 
@@ -371,9 +411,9 @@ Earth-field magnitude is typically tens of microtesla. A conservative range gate
 
 Outside this range, heading is invalidated and `mag_interference` is asserted.
 
-# Actuation and Arming
+# Actuation and arming
 
-## Actuator Abstraction
+## Actuator abstraction
 
 The actuator is wrapped by `AirbrakeActuator`:
 
@@ -381,7 +421,7 @@ The actuator is wrapped by `AirbrakeActuator`:
 - controlled enable/disable behavior
 - safe idle enforcement
 
-## Safety Gates
+## Safety gates
 
 Motion is permitted only if:
 
@@ -391,21 +431,21 @@ Motion is permitted only if:
 
 If any condition fails, actuator output is forced to idle.
 
-## Formal Arming State Diagram
+## Formal arming state diagram
 
-![Arming finite-state machine with explicit guards, actions, and safety invariant.](figs/arming-fsm.png){#fig:arming-fsm width=85%}
+![Figure: Arming finite-state machine with explicit guards, actions, and safety invariant.](figs/arming-fsm.png){#fig:arming-fsm width=85%}
 
-## Policy Placeholder
+## Policy placeholder
 
 The policy function is intentionally inert: it returns an invalid output unless replaced by reviewed logic. This ensures that even an armed system remains actuator-idle until a formal policy implementation asserts `pol.valid = true`.
 
-# Telemetry and Command Interface
+# Telemetry and command interface
 
-## Telemetry Schema Stability
+## Telemetry schema stability
 
 Telemetry uses a CSV line format. A header line (`HDR,...`) defines field order. Field order is treated as a parsing contract; extensions should append fields rather than reorder.
 
-## Age Computation
+## Age computation
 
 Ages are computed from `t_ms` fields and current time. Invalid states return a sentinel (conceptually $\bot$). This enables downstream analysis to distinguish:
 
@@ -413,11 +453,11 @@ Ages are computed from `t_ms` fields and current time. Invalid states return a s
 - valid-but-stale
 - valid-and-fresh
 
-## Warning Mask
+## Warning mask
 
 A compact `warn_mask` bitfield summarizes safety and health states for fast parsing and alerting.
 
-## Command Set (Conceptual)
+## Command set (conceptual)
 
 The command interface supports:
 
@@ -428,17 +468,17 @@ The command interface supports:
 - EEPROM persistence (`SAVE_CFG`, `LOAD_CFG`)
 - safety/arming (`ARM <token>`, `DISARM`)
 
-# System Requirements and Traceability
+# System requirements and traceability
 
-## Requirements Philosophy
+## Requirements philosophy
 
 Requirements are presented as verifiable statements mapped to code sections/functions and telemetry observables proving satisfaction.
 
-## Requirements Traceability Table
+## Requirements traceability table
 
 Table: Requirements traceability mapping to code and telemetry observables. {#tbl:req-trace}
 
-| Req ID | Requirement Description | Code Mapping | Telemetry Observables |
+| Req ID | Requirement description | Code mapping | Telemetry observables |
 |:--|:--|:--|:--|
 | R-1 | Acquire IMU data at fixed 100 Hz with bounded execution and publish roll/pitch and plausibility metadata. | `imu_update()`, `ImuSample` | `roll_deg`, `pitch_deg`, `a_norm`, `imu_age_ms`, `motion_bad` |
 | R-2 | Acquire barometer pressure/temperature at fixed 50 Hz and publish validity and age. | `baro_update()`, `BaroSample` | `press_hpa`, `temp_c`, `baro_age_ms` |
@@ -447,15 +487,15 @@ Table: Requirements traceability mapping to code and telemetry observables. {#tb
 | R-5 | Compute tilt-compensated heading only when calibration is valid, IMU tilt is plausible, and magnetic norm is plausible. | `mag_update()`, `heading_tilt_comp_deg()` | `hdg_deg`, `mag_valid`, `mag_interf`, `mag_norm_uT`, `mag_cal_valid` |
 | R-6 | Guarantee actuator idle unless compile-time gate, runtime arming, and policy validity all pass. | `ACTUATION_ENABLED`, `update_arming()`, `compute_airbrake_policy()` | `arm_state`, `act_en`, `warn_mask` bit 4 |
 | R-7 | Provide stable schema telemetry at fixed 20 Hz including health summary mask. | `print_header()`, `emit_tlm()`, `build_warn_mask()` | `HDR`, `TLM`, `warn_mask` |
-| R-8 | Persist configuration with CRC integrity and reject corrupted or incompatible EEPROM blobs. | `eeprom_save_cfg()`, `eeprom_load_cfg()`, CRC32 | EEPROM status lines: `EEPROM,LOAD,OK/CRC_FAIL/BAD_VERSION/NO_MAGIC` |
+| R-8 | Persist configuration with CRC integrity and reject corrupted or incompatible EEPROM blobs. | `eeprom_save_cfg()`, `eeprom_load_cfg()`, CRC32 | `EEPROM,LOAD,OK/CRC_FAIL/BAD_VERSION/NO_MAGIC` |
 
-## Telemetry-Based Verification Notes
+## Telemetry-based verification notes
 
 - R-1–R-5 can be verified by age fields and plausibility gates.
 - R-6 is verified by invariants: actuator remains idle while `pol.valid = false` and/or not armed.
 - R-8 is verified by status lines across power cycles and deliberate corruption tests.
 
-# Timing Budget and Worst-Case Execution Time
+# Timing budget and worst-case execution time
 
 ## Purpose
 
@@ -468,11 +508,11 @@ A timing budget provides a schedulability argument and a regression baseline.
 - Each library call executes a bounded number of transfers (no blocking waits)
 - Telemetry output at 115200 baud; formatting dominates CPU time, transmission is buffered
 
-## WCET Table
+## WCET table
 
 Table: Conservative WCET estimates for scheduled epochs and worst-case alignment. {#tbl:wcet}
 
-| Function / Epoch | Rate | WCET (µs) | Dominant costs |
+| Function / epoch | Rate | WCET (µs) | Dominant costs |
 |:--|:--:|--:|:--|
 | `imu_update()` | 100 Hz | ≤ 300 | I²C burst read + trig/sqrt |
 | `baro_update()` | 50 Hz | ≤ 450 | Pressure + temperature read and conversion |
@@ -483,11 +523,11 @@ Table: Conservative WCET estimates for scheduled epochs and worst-case alignment
 | `emit_tlm()` | 20 Hz | ≤ 900 | Formatting + multiple `Serial.print` |
 | **Worst-case aligned loop** | — | **≈ 2060** | All epochs coincide with telemetry |
 
-## Schedulability Argument
+## Schedulability argument
 
 Worst-case aligned loop work $\approx 2.06$ ms leaves margin within the fastest period (10 ms IMU cadence). This supports additional bounded logic without violating the determinism contract.
 
-## Recommended Timing Regression Instrumentation
+## Recommended timing regression instrumentation
 
 An optional diagnostic mechanism is recommended:
 
@@ -495,9 +535,9 @@ An optional diagnostic mechanism is recommended:
 - track maximum observed duration per epoch
 - emit a 1 Hz diagnostic line with observed maxima
 
-# Kalman-Based Altitude and Vertical Velocity Estimation
+# Kalman-based altitude and vertical velocity estimation
 
-## Model and Filter
+## Model and filter
 
 The estimator is a deterministic two-state discrete-time Kalman filter with state
 
@@ -545,7 +585,7 @@ Q = q_{\text{acc}}
 \qquad q_{\text{acc}} > 0
 $$ {#eq:kf-Q}
 
-## Predict–Update Equations
+## Predict–update equations
 
 Prediction:
 
@@ -570,7 +610,7 @@ $$
 P_k = (I-K_kH)P_k^-(I-K_kH)^T + K_k R K_k^T
 $$ {#eq:kf-joseph}
 
-## Observability and Detectability
+## Observability and detectability
 
 **Theorem 1 (Observability).** For $\Delta t \neq 0$, the pair $(A,H)$ is observable.
 
@@ -593,7 +633,7 @@ with $\det(\mathcal{O}) = \Delta t \neq 0$, hence full rank. $\square$
 
 **Corollary 1.** $(A,H)$ is detectable.
 
-## Riccati Convergence
+## Riccati convergence
 
 The Riccati recursion induced by the Kalman filter is
 
@@ -603,11 +643,11 @@ P_{k+1}
 - A P_k H^T (H P_k H^T + R)^{-1} H P_k A^T
 $$ {#eq:riccati-recursion}
 
-**Theorem 2 (Existence and Uniqueness of Stabilizing Solution).** Under Assumption 1 and Theorem 1, the discrete-time algebraic Riccati equation admits a unique stabilizing solution $P_\infty \succ 0$ and $P_k \to P_\infty$.
+**Theorem 2 (Existence and uniqueness of stabilizing solution).** Under Assumption 1 and Theorem 1, the discrete-time algebraic Riccati equation admits a unique stabilizing solution $P_\infty \succ 0$ and $P_k \to P_\infty$.
 
 **Proof.** Observability implies detectability; with $Q \succ 0$ and $R > 0$, standard discrete-time Kalman filtering conditions hold, yielding a unique stabilizing solution and convergence of $P_k$. $\square$
 
-## Lyapunov Stability of Estimation Error
+## Lyapunov stability of estimation error
 
 Define estimation error $e_k = x_k - \hat{x}_k$. In steady state, $K_k \to K_\infty$, giving LTI error dynamics
 
@@ -617,7 +657,7 @@ F = A - K_\infty H,\qquad
 \eta_k = w_k - K_\infty v_k
 $$ {#eq:error-dynamics}
 
-**Theorem 3 (Mean-Square Exponential Stability).** Under Assumption 1 and Theorem 1, the steady-state estimation error dynamics are mean-square exponentially stable; equivalently, $\rho(F) < 1$.
+**Theorem 3 (Mean-square exponential stability).** Under Assumption 1 and Theorem 1, the steady-state estimation error dynamics are mean-square exponentially stable; equivalently, $\rho(F) < 1$.
 
 **Proof.** At steady state, $P_\infty$ satisfies the algebraic Riccati equation which implies
 
@@ -627,9 +667,9 @@ $$ {#eq:lyap-identity}
 
 Pre- and post-multiplying by $P_\infty^{-1}$ yields a discrete Lyapunov inequality, implying $\rho(F)<1$ and exponential stability. Mean-square boundedness follows by standard linear stochastic system arguments with bounded driving noise covariance. $\square$
 
-## LMI Characterization of the Steady-State Solution
+## LMI characterization of the steady-state solution
 
-**Proposition 1 (Riccati Inequality as an LMI).** For $P \succ 0$, the Riccati inequality
+**Proposition 1 (Riccati inequality as an LMI).** For $P \succ 0$, the Riccati inequality
 
 $$
 P \succ APA^T + Q - APH^T (HPH^T + R)^{-1} HPA^T
@@ -650,7 +690,7 @@ $$
 K = A P H^T (H P H^T + R)^{-1}
 $$ {#eq:ss-gain}
 
-## Monte Carlo Performance Evaluation (Illustrative)
+## Monte Carlo performance evaluation (illustrative)
 
 Illustrative study setup:
 
@@ -674,20 +714,20 @@ $$ {#eq:nees}
 
 Table: Example Monte Carlo performance over 1000 trials. {#tbl:monte-carlo}
 
-| Metric | Mean | Std Dev |
+| Metric | Mean | Std dev |
 |:--|--:|--:|
 | Altitude RMSE (m) | 0.84 | 0.12 |
 | Velocity RMSE (m/s) | 0.41 | 0.09 |
 
-## Kalman Filter Block Diagram
+## Kalman filter block diagram
 
-![Discrete-time Kalman filter structure with coupled state and covariance propagation.](figs/kalman-block-diagram.png){#fig:kf-block width=85%}
+![Figure: Discrete-time Kalman filter structure with coupled state and covariance propagation.](figs/kalman-block-diagram.png){#fig:kf-block width=85%}
 
-## Covariance Evolution Example
+## Covariance evolution example
 
-![Illustrative covariance convergence under constant noise assumptions.](figs/covariance-convergence.png){#fig:covariance-conv width=70%}
+![Figure: Illustrative covariance convergence under constant noise assumptions.](figs/covariance-convergence.png){#fig:covariance-conv width=70%}
 
-## Comparison: EMA vs. Kalman Estimator
+## Comparison: EMA vs. Kalman estimator
 
 Table: Comparison of exponential moving average and Kalman-based estimator. {#tbl:ema-vs-kf}
 
@@ -703,21 +743,21 @@ Table: Comparison of exponential moving average and Kalman-based estimator. {#tb
 | Computational complexity | $O(1)$ | $O(1)$ |
 | WCET deterministic | Yes | Yes |
 
-# Deterministic Execution and Safety Guarantees
+# Deterministic execution and safety guarantees
 
-## Formal Statements
+## Formal statements
 
-**Definition 1 (Deterministic Epoch).** An epoch function is deterministic if it:
+**Definition 1 (Deterministic epoch).** An epoch function is deterministic if it:
 
 1. performs a bounded number of floating-point operations,
 2. performs at most one sensor transaction per scheduled invocation, and
 3. contains no blocking calls.
 
-**Theorem 4 (Bounded Execution Time).** If all epochs satisfy Definition 1 and the scheduler invokes a finite set of epochs per loop iteration, then worst-case loop execution time is bounded.
+**Theorem 4 (Bounded execution time).** If all epochs satisfy Definition 1 and the scheduler invokes a finite set of epochs per loop iteration, then worst-case loop execution time is bounded.
 
 **Proof.** Each epoch executes $O(1)$ work; the loop executes a finite sum of bounded costs, hence bounded. $\square$
 
-**Definition 2 (Actuation Permission Predicate).**
+**Definition 2 (Actuation permission predicate).**
 
 $$
 \Pi \triangleq
@@ -726,7 +766,7 @@ $$
 \wedge \texttt{pol.valid}
 $$ {#eq:actuation-predicate}
 
-**Theorem 5 (Actuator Safety Guarantee).** If $\Pi = 0$ then the actuator output is forced to the idle command.
+**Theorem 5 (Actuator safety guarantee).** If $\Pi = 0$ then the actuator output is forced to the idle command.
 
 **Proof.** The control logic implements
 
@@ -740,46 +780,46 @@ $$ {#eq:actuator-safety}
 
 thus the actuator cannot move unless $\Pi$ holds. $\square$
 
-# Operational Procedures and Test Plan
+# Operational procedures and test plan
 
-## Bench Bring-Up Checklist
+## Bench bring-up checklist
 
 1. Power system with sensors on the selected I²C bus.
 2. Confirm init status lines (e.g., `BOOT,IMU,OK`).
 3. Confirm telemetry header (`HDR,...`) and telemetry lines (`TLM,...`).
 4. Confirm warning mask reflects expected initial conditions (baseline missing until captured).
 
-## Configuration and Calibration
+## Configuration and calibration
 
-### Baseline Capture
+### Baseline capture
 
 1. Place system at reference condition (pad).
 2. Execute `CAP_BASELINE`.
 3. Confirm `baseline_hpa` becomes finite and altitude becomes pad-relative.
 
-### Magnetometer Calibration
+### Magnetometer calibration
 
 1. Execute `CAL_MAG <seconds>` (e.g., 20–40).
 2. Rotate through broad orientations.
 3. Confirm completion line and `mag_cal_valid = 1`.
 
-### EEPROM Persistence
+### EEPROM persistence
 
 1. Execute `SAVE_CFG`.
 2. Power cycle.
 3. Execute `LOAD_CFG`.
 4. Confirm `EEPROM,LOAD,OK`.
 
-## Arming Safety Test
+## Arming safety test
 
 1. Switch off: `arm_state` remains `DISARMED`.
 2. Switch on without token: `SAFE`.
 3. After `ARM <token>`: `ARMED`.
 4. Confirm actuator remains idle (policy invalid by default).
 
-# Extension Roadmap
+# Extension roadmap
 
-## Policy Integration Requirements
+## Policy integration requirements
 
 A reviewed policy should satisfy:
 
@@ -788,7 +828,7 @@ A reviewed policy should satisfy:
 - explicit saturation behavior for `command01`
 - safe fallbacks under missing or stale sensor data
 
-## Telemetry Evolution
+## Telemetry evolution
 
 CSV is human-friendly but bandwidth-expensive. A binary packet format with CRC may be added:
 
@@ -796,7 +836,7 @@ CSV is human-friendly but bandwidth-expensive. A binary packet format with CRC m
 - explicit schema versioning
 - faster parsing and lower overhead
 
-## Fault Classification and Redundancy
+## Fault classification and redundancy
 
 Potential extensions:
 
@@ -808,9 +848,9 @@ Potential extensions:
 
 This paper consolidated a deterministic embedded flight-software structure built around explicit epoch scheduling, single-writer state publication, validity/age semantics, and strict actuation gating. A two-state Kalman estimator for altitude and vertical velocity was presented with formal observability, Riccati convergence, Lyapunov stability arguments, and an equivalent LMI characterization. The resulting architecture supports reviewable safety invariants and telemetry-based verification suitable for iterative flight-system development.
 
-# Appendix A: Telemetry Field Reference
+# Appendix A: Telemetry field reference
 
-## Conceptual Grouping
+## Conceptual grouping
 
 - **Time and safety:** `ms`, `arm_state`, `act_en`
 - **Barometer:** `press_hpa`, `temp_c`, `baro_age_ms`
@@ -819,7 +859,7 @@ This paper consolidated a deterministic embedded flight-software structure built
 - **Heading:** `hdg_deg`, `mag_valid`, `mag_interf`, `mag_age_ms`, `mag_norm_uT`, `decl_deg`, `mag_cal_valid`
 - **Configuration and warnings:** `cfg_valid`, `baseline_hpa`, `warn_mask`
 
-# Appendix B: Warning Mask Bit Assignments
+# Appendix B: Warning mask bit assignments
 
 Table: Warning mask bit assignments. {#tbl:warn-mask}
 
@@ -834,15 +874,15 @@ Table: Warning mask bit assignments. {#tbl:warn-mask}
 | 6 | Magnetometer interference detected |
 | 7 | Magnetometer calibration missing |
 
-# Appendix C: Engineering Invariants
+# Appendix C: Engineering invariants
 
-## Determinism Invariants
+## Determinism invariants
 
 1. `loop()` contains no `delay()` calls.
 2. Each epoch performs at most one sensor transaction per scheduled invocation.
 3. Epochs are safe to call every iteration (internal period gating).
 
-## Safety Invariants
+## Safety invariants
 
 1. If `arm_state != ARMED` then actuator output is forced idle.
 2. If `ACTUATION_ENABLED == 0` then actuator output is forced idle regardless of runtime arming.
