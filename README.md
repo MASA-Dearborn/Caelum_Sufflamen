@@ -1,29 +1,9 @@
 
-Caelum Sufflamen: Deterministic Instrumentation, Derived State Estimation with Formally Analyzed Kalman Filtering, Tilt-Compensated Heading, Safety-Gated Actuation, Telemetry, and CRC-Protected Configuration
-
-David Richardson
-
-
-abstract: |
-  This paper presents *Caelum Sufflamen* (Latin: “sky brakes”), a deterministic embedded flight-software architecture that enforces bounded execution, traceable publication of sensor and derived states, and safety-gated actuation. The implementation includes time-gated sensor epochs, derived-state estimation including a two-state Kalman filter for altitude and vertical velocity with formal observability, Riccati convergence, Lyapunov stability, and an equivalent LMI characterization of the steady-state solution. Tilt-compensated heading with calibration and interference gating, CRC-protected configuration persistence, and a stable telemetry/command interface support post-flight analysis and verification. Monte Carlo studies provide an illustrative evaluation of estimator accuracy and statistical consistency.
+## Caelum Sufflamen: 
+Deterministic Instrumentation, Derived State Estimation with Formally Analyzed Kalman Filtering, Tilt-Compensated Heading, Safety-Gated Actuation, Telemetry, and CRC-Protected Configuration
 
 
-
-
-
-keywords:
-  - Embedded systems
-  - soft real-time scheduling
-  - state estimation
-  - Kalman filtering
-  - Lyapunov stability
-  - LMI
-  - barometry
-  - inertial sensors
-  - magnetometer heading
-  - flight software safety
-  - telemetry
-  - CRC
+  This README presents *Caelum Sufflamen* (Latin: “sky brakes”), a deterministic embedded flight-software architecture that enforces bounded execution, traceable publication of sensor and derived states, and safety-gated actuation. The implementation includes time-gated sensor epochs, derived-state estimation including a two-state Kalman filter for altitude and vertical velocity with formal observability, Riccati convergence, Lyapunov stability, and an equivalent LMI characterization of the steady-state solution. Tilt-compensated heading with calibration and interference gating, CRC-protected configuration persistence, and a stable telemetry/command interface support post-flight analysis and verification. Monte Carlo studies provide an illustrative evaluation of estimator accuracy and statistical consistency.
 
 
 # Preface
